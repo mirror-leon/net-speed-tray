@@ -9,6 +9,7 @@ from dataclasses import dataclass
 user32 = windll.user32
 
 HWND_TOPMOST = -1
+HWND_NOTOPMOST = -2
 SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
 SWP_NOACTIVATE = 0x0010
@@ -19,6 +20,7 @@ GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_LAYERED = 0x00080000
+WS_EX_TOPMOST = 0x00000008
 
 
 @dataclass(frozen=True)
@@ -71,7 +73,7 @@ def find_tray_notify_hwnd(taskbar_hwnd: int) -> int:
 
 
 def calc_tray_dock_point(width: int, height: int) -> Point | None:
-    """计算贴在托盘左侧的屏幕坐标。"""
+    """计算嵌在任务栏内、系统托盘左侧的屏幕坐标。"""
     taskbar = find_taskbar_hwnd()
     taskbar_rect = _window_rect(taskbar)
     if taskbar_rect is None:
@@ -80,17 +82,16 @@ def calc_tray_dock_point(width: int, height: int) -> Point | None:
     notify = find_tray_notify_hwnd(taskbar)
     notify_rect = _window_rect(notify) if notify else None
 
+    # 紧贴 TrayNotifyWnd 左侧，垂直在任务栏内居中（像托盘扩展）
     if notify_rect is not None:
-        x = notify_rect.left - width - 6
-        y = notify_rect.top + max(0, (notify_rect.height - height) // 2)
+        x = notify_rect.left - width - 2
     else:
         x = taskbar_rect.right - width - 160
-        y = taskbar_rect.top + max(0, (taskbar_rect.height - height) // 2)
+
+    y = taskbar_rect.top + max(0, (taskbar_rect.height - height) // 2)
 
     if x < taskbar_rect.left + 4:
         x = taskbar_rect.left + 4
-    if y < taskbar_rect.top:
-        y = taskbar_rect.top
     return Point(int(x), int(y))
 
 
@@ -105,8 +106,27 @@ def apply_overlay_styles(hwnd: int) -> None:
     user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
 
 
+def clear_topmost(hwnd: int) -> None:
+    """取消置顶，避免浮窗盖住游戏/全屏应用。"""
+    hwnd = resolve_toplevel_hwnd(hwnd)
+    if not hwnd:
+        return
+    style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+    if style & WS_EX_TOPMOST:
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style & ~WS_EX_TOPMOST)
+    user32.SetWindowPos(
+        hwnd,
+        HWND_NOTOPMOST,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+    )
+
+
 def raise_topmost(hwnd: int) -> None:
-    """仅恢复置顶与可见，不改位置尺寸，避免打断 Tk 重绘。"""
+    """桌面场景下置顶，保证能看见；全屏时应先 hide 再 clear_topmost。"""
     hwnd = resolve_toplevel_hwnd(hwnd)
     if not hwnd:
         return
